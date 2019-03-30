@@ -37,7 +37,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
     private Map<String, WorkItemHandler> workItemHandlers;
 
-    private List<Map<String, Object>> businessRuleTaskParameters = new ArrayList();
+    private List<Map<String, Object>> businessRuleTaskParameters = new ArrayList<>();
 
     private List<Map<String, Object>> sendMessageWihParameters = new ArrayList<>();
 
@@ -88,7 +88,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         long pId = startProcess(incident, destinations, "PT60S");
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Verify Responder Available command");
+        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Set Responder Unavailable");
         assertNodeActive(pId, "signal1");
 
         verify(workItemHandlers.get("ResponderService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
@@ -113,7 +113,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         // SendMessageTask
         params = sendMessageWihParameters.get(0);
         assertThat(params, notNullValue());
-        assertThat(params.get("MessageType"), equalTo("VerifyResponderAvailableCommand"));
+        assertThat(params.get("MessageType"), equalTo("SetResponderUnavailableCommand"));
         assertThat(params.get("Payload"), notNullValue());
         assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
         Mission m = (Mission) params.get("Payload");
@@ -280,7 +280,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         Thread.sleep(5000);
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Verify Responder Available command", "timer");
+        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Set Responder Unavailable", "timer");
         assertNodeActive(pId, "signal1");
 
         verify(workItemHandlers.get("ResponderService"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
