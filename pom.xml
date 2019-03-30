@@ -8,7 +8,7 @@
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
-    <version.rhpam>7.14.0.Final-redhat-00004</version.rhpam>
+    <version.rhpam>7.18.0.Final-redhat-00002</version.rhpam>
   </properties>
   <dependencies>
     <dependency>
