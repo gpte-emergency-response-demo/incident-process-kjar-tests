@@ -5,7 +5,7 @@ import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -88,7 +88,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         long pId = startProcess(incident, destinations, "PT60S");
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Set Responder Unavailable");
+        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Update Responder Availability");
         assertNodeActive(pId, "signal1");
 
         verify(workItemHandlers.get("ResponderService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
@@ -113,7 +113,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         // SendMessageTask
         params = sendMessageWihParameters.get(0);
         assertThat(params, notNullValue());
-        assertThat(params.get("MessageType"), equalTo("SetResponderUnavailableCommand"));
+        assertThat(params.get("MessageType"), equalTo("SetResponderUnavailable"));
         assertThat(params.get("Payload"), notNullValue());
         assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
         Mission m = (Mission) params.get("Payload");
@@ -149,7 +149,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         long pId = startProcess(incident, destinations, "PT60S");
 
         // Signal process
-        signalProcess(mgr, "ResponderAvailableEvent", Boolean.TRUE, pId);
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
 
         assertProcessInstanceCompleted(pId);
 
@@ -160,7 +160,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         // SendMessageTask
         Map<String, Object> params = sendMessageWihParameters.get(1);
         assertThat(params, notNullValue());
-        assertThat(params.get("MessageType"), equalTo("CreateMissionCommand"));
+        assertThat(params.get("MessageType"), equalTo("CreateMission"));
         assertThat(params.get("Payload"), notNullValue());
         assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
         Mission m = (Mission) params.get("Payload");
@@ -242,7 +242,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         long pId = startProcess(incident, destinations, "PT60M");
 
         // Signal process
-        signalProcess(mgr, "ResponderAvailableEvent", Boolean.FALSE, pId);
+        signalProcess(mgr, "ResponderAvailable", Boolean.FALSE, pId);
 
         assertProcessInstanceActive(pId);
         assertNodeNotTriggered(pId, "Create Mission Command");
@@ -280,7 +280,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         Thread.sleep(5000);
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Set Responder Unavailable", "timer");
+        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Update Responder Availability", "timer");
         assertNodeActive(pId, "signal1");
 
         verify(workItemHandlers.get("ResponderService"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
