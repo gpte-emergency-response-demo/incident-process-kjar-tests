@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import com.arjuna.ats.arjuna.coordinator.TxControl;
 import com.redhat.cajun.navy.rules.model.Destinations;
@@ -56,7 +57,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
     }
 
     @BeforeClass
-    public static void setupTest() throws Exception {
+    public static void setupTest() {
         TxControl.setXANodeName("node1");
         TxControl.setDefaultTimeout(300);
     }
@@ -71,15 +72,15 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *    Then:
      *      The ResponderService wih is invoked to get the List of available Responders
      *      The BusinessRuleTask wih is invoked to assign a mission
-     *      The SendMessage wih is invoked which sends a VerifyResponderMessage message to Kafka
-     *      The process is waiting on a signal with reference ResponderAvailableEvent
+     *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
+     *      The process is waiting on a signal with reference ResponderAvailable
      */
     @Test
     public void testIncidentProcess() {
 
         setup(true);
 
-        incidentId = "incidentId1";
+        incidentId = UUID.randomUUID().toString();
         responderId = "responderId";
         responders = responders();
         destinations = destinations();
@@ -130,17 +131,17 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      an instance of the incident process is started
      *      a mission can be assigned to the incident
      *      the responder assigned to the mission is available
-     *        (the process is signaled with a signal with reference ResponderAvailableEvent and payload true)
+     *        (the process is signaled with a signal with reference ResponderAvailable and payload true)
      *    Then:
-     *      The SendMessage wih is invoked which sends a CreateMissionCommand message to Kafka
-     *      The process is ended.
+     *      The SendMessage wih is invoked which sends a CreateMission message to Kafka
+     *      The process is waiting on a signal with reference MissionCreated.
      */
     @Test
     public void testIncidentProcessWhenSignalResponderAvailableEvent() {
 
         setup(true);
 
-        incidentId = "incidentId2";
+        incidentId = UUID.randomUUID().toString();
         responderId = "responderId";
         responders = responders();
         destinations = destinations();
@@ -151,7 +152,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         // Signal process
         signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
 
-        assertProcessInstanceCompleted(pId);
+        assertProcessInstanceActive(pId);
 
         assertNodeTriggered(pId, "Create Mission Command");
 
@@ -167,6 +168,9 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertThat(m.getStatus(), equalTo(Status.ASSIGNED));
         assertThat(m.getIncidentId(), equalTo(incidentId));
         assertThat(m.getResponderId(), equalTo(responderId));
+
+        assertNodeActive(pId, "signal2");
+
     }
 
     /**
@@ -184,7 +188,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
     public void testIncidentProcessWhenNoAssignment() {
         setup(false);
 
-        incidentId = "incidentId3";
+        incidentId = UUID.randomUUID().toString();
         responderId = "responderId";
         responders = responders();
         destinations = destinations();
@@ -222,18 +226,18 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      an instance of the incident process is started
      *      a mission can be assigned to the incident
      *      the responder assigned to the mission is not available
-     *        (the process is signaled with a signal with reference ResponderAvailableEvent and payload false)
+     *        (the process is signaled with a signal with reference ResponderAvailable and payload false)
      *    Then:
      *      The ResponderService wih is invoked to get the List of available Responders
      *      The BusinessRuleTask wih is invoked to assign a mission
-     *      The SendMessage wih is invoked which sends a VerifyResponderMessage message to Kafka
+     *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
      *      The process waits in a timer node
      */
     @Test
     public void testIncidentProcessWhenResponderNotAvailable() {
         setup(true);
 
-        incidentId = "incidentId4";
+        incidentId = UUID.randomUUID().toString();
         responderId = "responderId";
         responders = responders();
         destinations = destinations();
@@ -260,15 +264,15 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *    Then:
      *      The ResponderService wih is invoked twice to get the List of available Responders
      *      The BusinessRuleTask wih is invoked twice to assign a mission
-     *      The SendMessage wih is invoked which sends a VerifyResponderMessage message to Kafka
-     *      The process is waiting on a signal with reference ResponderAvailableEvent
+     *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
+     *      The process is waiting on a signal with reference ResponderAvailable
      */
     @Test
     public void testIncidentProcessSecondAssignment() throws Exception {
 
         setup(false);
 
-        incidentId = "incidentId5";
+        incidentId = UUID.randomUUID().toString();
         responderId = "responderId";
         responders = responders();
         destinations = destinations();
@@ -286,8 +290,350 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         verify(workItemHandlers.get("ResponderService"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("BusinessRuleTask"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("SendMessage")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+    }
 
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is started
+     *        (the process instance is signaled with a signal with reference MissionStarted
+     *    Then:
+     *      The status of the incident is set to 'Assigned'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is waiting on a signal with reference VictimPickedUp.
+     */
+    @Test
+    public void testIncidentProcessWhenMissionStartedSignal() {
 
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionStarted
+        signalProcess(mgr, "MissionStarted",null, pId);
+
+        assertProcessInstanceActive(pId);
+
+        assertNodeTriggered(pId, "Update Incident Assigned");
+
+        verify(workItemHandlers.get("SendMessage"), times(3)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(2);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("Assigned"));
+
+        assertNodeActive(pId, "signal3");
+    }
+
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is aborted
+     *        (the process instance is signaled with a signal with reference MissionAborted
+     *    Then:
+     *      The status of the incident is set to 'Aborted'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is completed.
+     */
+    @Test
+    public void testIncidentProcessMissionAbortedBeforeMissionStartedSignal() {
+
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionAborted
+        signalProcess(mgr, "MissionAborted", null, pId);
+
+        assertProcessInstanceCompleted(pId);
+
+        assertNodeTriggered(pId, "Mission Aborted", "Update Incident Aborted");
+        assertNodeNotTriggered(pId, "Update Incident Assigned");
+
+        verify(workItemHandlers.get("SendMessage"), times(3)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(2);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("Aborted"));
+    }
+
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is started
+     *        (the process instance is signaled with a signal with reference MissionStarted
+     *      the victim is picked up
+     *        (the process instance is signaled with a signal with reference VictimPickedUp
+     *    Then:
+     *      The status of the incident is set to 'PickedUp'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is waiting on a signal with reference VictimDelivered.
+     */
+    @Test
+    public void testIncidentProcessWhenVictimPickedUpSignal() {
+
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionStarted
+        signalProcess(mgr, "MissionStarted",null, pId);
+
+        // Signal process VictimPickedUp
+        signalProcess(mgr, "VictimPickedUp", null, pId);
+
+        assertProcessInstanceActive(pId);
+
+        assertNodeTriggered(pId, "Update Incident PickedUp");
+
+        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(3);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("PickedUp"));
+
+        assertNodeActive(pId, "signal4");
+    }
+
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is started
+     *        (the process instance is signaled with a signal with reference MissionStarted
+     *      the mission is aborted
+     *        (the process instance is signaled with a signal with reference MissionAborted
+     *    Then:
+     *      The status of the incident is set to 'Aborted'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is completed.
+     */
+    @Test
+    public void testIncidentProcessMissionAbortedBeforeVictimPickedSignal() {
+
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionStarted
+        signalProcess(mgr, "MissionStarted",null, pId);
+
+        // Signal process MissionAborted
+        signalProcess(mgr, "MissionAborted", null, pId);
+
+        assertProcessInstanceCompleted(pId);
+
+        assertNodeTriggered(pId, "Update Incident Assigned", "Mission Aborted", "Update Incident Aborted");
+        assertNodeNotTriggered(pId, "Update Incident PickedUp");
+
+        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(3);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("Aborted"));
+    }
+
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is started
+     *        (the process instance is signaled with a signal with reference MissionStarted
+     *      the victim is picked up
+     *        (the process instance is signaled with a signal with reference VictimPickedUp
+     *      the victim is delivered
+     *        (the process instance is signaled with a signal with reference VictimDelivered
+     *    Then:
+     *      The status of the incident is set to 'Delivered'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is completed.
+     */
+    @Test
+    public void testIncidentProcessWhenVictimDeliveredSignal() {
+
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionStarted
+        signalProcess(mgr, "MissionStarted",null, pId);
+
+        // Signal process VictimPickedUp
+        signalProcess(mgr, "VictimPickedUp", null, pId);
+
+        // Signal process VictimDelivered
+        signalProcess(mgr, "VictimDelivered", null, pId);
+
+        assertProcessInstanceCompleted(pId);
+
+        assertNodeTriggered(pId, "Update Incident Delivered");
+
+        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(4);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("Delivered"));
+    }
+
+    /**
+     *  Test description:
+     *    Given:
+     *    When :
+     *      an instance of the incident process is started
+     *      a mission can be assigned to the incident
+     *      the responder assigned to the mission is available
+     *        (the process instance is signaled with a signal with reference ResponderAvailable and payload true)
+     *      the mission is started
+     *        (the process instance is signaled with a signal with reference MissionStarted
+     *      the victim is picked up
+     *        (the process instance is signaled with a signal with reference VictimPickedUp
+     *      the mission is aborted
+     *        (the process instance is signaled with a signal with reference MissionAborted
+     *    Then:
+     *      The status of the incident is set to 'Aborted'
+     *      The SendMessage wih is invoked which sends a UpdateIncident message to Kafka
+     *      The process is completed.
+     */
+    @Test
+    public void testIncidentProcessMissionAbortedBeforeVictimDeliveredSignal() {
+
+        setup(true);
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        Incident incident = incident(incidentId);
+
+        long pId = startProcess(incident, destinations, "PT60S");
+
+        // Signal process ResponderAvailable
+        // Signal process ResponderAvailable
+        signalProcess(mgr, "ResponderAvailable", Boolean.TRUE, pId);
+
+        // Signal process MissionStarted
+        signalProcess(mgr, "MissionStarted",null, pId);
+
+        // Signal process VictimPickedUp
+        signalProcess(mgr, "VictimPickedUp", null, pId);
+
+        // Signal process MissionAborted
+        signalProcess(mgr, "MissionAborted", null, pId);
+
+        assertProcessInstanceCompleted(pId);
+
+        assertNodeTriggered(pId, "Update Incident PickedUp", "Mission Aborted", "Update Incident Aborted");
+        assertNodeNotTriggered(pId, "Update Incident Delivered");
+
+        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(4);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Incident.class)));
+        Incident payload = (Incident) params.get("Payload");
+        assertThat(payload.getId(), equalTo(incidentId));
+        assertThat(payload.getStatus(), equalTo("Aborted"));
     }
 
     private void setup(boolean assigned) {
