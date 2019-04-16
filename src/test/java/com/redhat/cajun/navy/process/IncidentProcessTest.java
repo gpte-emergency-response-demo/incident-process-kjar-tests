@@ -21,6 +21,7 @@ import java.util.UUID;
 import com.arjuna.ats.arjuna.coordinator.TxControl;
 import com.redhat.cajun.navy.rules.model.Destinations;
 import com.redhat.cajun.navy.rules.model.Incident;
+import com.redhat.cajun.navy.rules.model.IncidentPriority;
 import com.redhat.cajun.navy.rules.model.Mission;
 import com.redhat.cajun.navy.rules.model.Responders;
 import com.redhat.cajun.navy.rules.model.Status;
@@ -42,6 +43,8 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
     private List<Map<String, Object>> sendMessageWihParameters = new ArrayList<>();
 
+    private List<Map<String, Object>> incidentPriorityServiceWihParameters = new ArrayList<>();
+
     private String incidentId;
 
     private String responderId;
@@ -49,6 +52,8 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
     private Destinations destinations;
 
     private Responders responders;
+
+    private IncidentPriority incidentPriority;
 
     private int nrAssignments = 0;
 
@@ -71,6 +76,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      the responder assigned to the mission is available
      *    Then:
      *      The ResponderService wih is invoked to get the List of available Responders
+     *      The IncidentPriorityService wih is invoked to get the priority of the incident
      *      The BusinessRuleTask wih is invoked to assign a mission
      *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
      *      The process is waiting on a signal with reference ResponderAvailable
@@ -80,25 +86,26 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission", "Update Responder Availability");
+        assertNodeTriggered(pId, "Get Active Responders", "Get Incident Priority", "Assign Mission", "Update Responder Availability");
         assertNodeActive(pId, "signal1");
 
         verify(workItemHandlers.get("ResponderService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("IncidentPriorityService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("BusinessRuleTask")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("SendMessage")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
+        // IncidentPriorityService
+        Map<String, Object> params = incidentPriorityServiceWihParameters.get(0);
+        assertThat(params, notNullValue());
+        assertThat(params.get("Incident"), equalTo(incident));
 
         // BusinessRuleTask
-        Map<String, Object> params = businessRuleTaskParameters.get(0);
+        params = businessRuleTaskParameters.get(0);
         assertThat(params, notNullValue());
         assertThat(params.get("Language"), equalTo("DRL"));
         assertThat(params.get("KieSessionType"), equalTo("stateless"));
@@ -110,6 +117,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertThat(params.get("Mission"), is(instanceOf(Mission.class)));
         Mission mission = (Mission)params.get("Mission");
         assertThat(mission.getStatus(), equalTo(Status.REQUESTED));
+        assertThat(params.get("IncidentPriority"), notNullValue());
+        assertThat(params.get("IncidentPriority"), is(instanceOf(IncidentPriority.class)));
+        IncidentPriority incidentPriority = (IncidentPriority)params.get("IncidentPriority");
+        assertThat(incidentPriority.getIncidentId(), equalTo(incidentId));
 
         // SendMessageTask
         params = sendMessageWihParameters.get(0);
@@ -133,6 +144,7 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      the responder assigned to the mission is available
      *        (the process is signaled with a signal with reference ResponderAvailable and payload true)
      *    Then:
+     *      The SendMessage wih is invoked which sends a IncidentAssignmentEvent to Kafka
      *      The SendMessage wih is invoked which sends a CreateMission message to Kafka
      *      The process is waiting on a signal with reference MissionCreated.
      */
@@ -141,10 +153,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -156,15 +164,24 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         assertNodeTriggered(pId, "Create Mission Command");
 
-        verify(workItemHandlers.get("SendMessage"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(3)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(1);
+        Map<String, Object>  params = sendMessageWihParameters.get(1);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("IncidentAssignment"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
+        Mission m = (Mission) params.get("Payload");
+        assertThat(m.getStatus(), equalTo(Status.ASSIGNED));
+        assertThat(m.getIncidentId(), equalTo(incidentId));
+
+        params = sendMessageWihParameters.get(2);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("CreateMission"));
         assertThat(params.get("Payload"), notNullValue());
         assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
-        Mission m = (Mission) params.get("Payload");
+        m = (Mission) params.get("Payload");
         assertThat(m.getStatus(), equalTo(Status.ASSIGNED));
         assertThat(m.getIncidentId(), equalTo(incidentId));
         assertThat(m.getResponderId(), equalTo(responderId));
@@ -181,31 +198,36 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      a mission cannot be assigned to the incident
      *    Then:
      *      The ResponderService wih is invoked to get the List of available Responders
+     *      The IncidentPriorityService wih is invoked to get the priority of the incident
      *      The BusinessRuleTask wih is invoked to assign a mission
+     *      The SendMessage wih is invoked which sends a IncidentAssignmentEvent to Kafka
      *      The process waits in a timer node
      */
     @Test
     public void testIncidentProcessWhenNoAssignment() {
         setup(false);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60M");
 
         assertProcessInstanceActive(pId);
-        assertNodeTriggered(pId, "Get Active Responders", "Assign Mission");
+        assertNodeTriggered(pId, "Get Active Responders", "Get Incident Priority", "Assign Mission", "Incident Assignment Event");
         assertNodeNotTriggered(pId, "Verify Responder Available command");
         assertNodeActive(pId, "timer");
 
         verify(workItemHandlers.get("ResponderService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("IncidentPriorityService")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("BusinessRuleTask")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // IncidentPriorityService
+        Map<String, Object> params = incidentPriorityServiceWihParameters.get(0);
+        assertThat(params, notNullValue());
+        assertThat(params.get("Incident"), equalTo(incident));
 
         // BusinessRuleTask
-        Map<String, Object> params = businessRuleTaskParameters.get(0);
+        params = businessRuleTaskParameters.get(0);
         assertThat(params, notNullValue());
         assertThat(params.get("Language"), equalTo("DRL"));
         assertThat(params.get("KieSessionType"), equalTo("stateless"));
@@ -217,6 +239,16 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertThat(params.get("Mission"), is(instanceOf(Mission.class)));
         Mission mission = (Mission)params.get("Mission");
         assertThat(mission.getStatus(), equalTo(Status.REQUESTED));
+
+        // SendMessageTask
+        params = sendMessageWihParameters.get(0);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("IncidentAssignment"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
+        Mission m = (Mission) params.get("Payload");
+        assertThat(m.getStatus(), equalTo(Status.UNASSIGNED));
+        assertThat(m.getIncidentId(), equalTo(incidentId));
     }
 
     /**
@@ -229,18 +261,16 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *        (the process is signaled with a signal with reference ResponderAvailable and payload false)
      *    Then:
      *      The ResponderService wih is invoked to get the List of available Responders
+     *      The IncidentPriorityService wih is invoked to get the priority of the incident
      *      The BusinessRuleTask wih is invoked to assign a mission
      *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
+     *      The SendMessage wih is invoked which send a IncidentAssignmentEvent to Kafka
      *      The process waits in a timer node
      */
     @Test
     public void testIncidentProcessWhenResponderNotAvailable() {
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60M");
@@ -250,6 +280,9 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         assertProcessInstanceActive(pId);
         assertNodeNotTriggered(pId, "Create Mission Command");
+
+        verify(workItemHandlers.get("SendMessage"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
         assertNodeActive(pId, "timer");
     }
 
@@ -263,7 +296,9 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
      *      the responder assigned to the mission is available
      *    Then:
      *      The ResponderService wih is invoked twice to get the List of available Responders
+     *      The IncidentPriorityService wih is invoked twice to get the priority of the incident
      *      The BusinessRuleTask wih is invoked twice to assign a mission
+     *      The SendMessage wih is invoked which send a IncidentAssignmentEvent to Kafka
      *      The SendMessage wih is invoked which sends a SetResponderUnavailable message to Kafka
      *      The process is waiting on a signal with reference ResponderAvailable
      */
@@ -272,10 +307,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(false);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT1S");
@@ -289,7 +320,18 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         verify(workItemHandlers.get("ResponderService"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
         verify(workItemHandlers.get("BusinessRuleTask"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
-        verify(workItemHandlers.get("SendMessage")).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("IncidentPriorityService"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(0);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("IncidentAssignment"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
+        Mission m = (Mission) params.get("Payload");
+        assertThat(m.getStatus(), equalTo(Status.UNASSIGNED));
+        assertThat(m.getIncidentId(), equalTo(incidentId));
     }
 
     /**
@@ -312,10 +354,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -330,10 +368,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         assertNodeTriggered(pId, "Update Incident Assigned");
 
-        verify(workItemHandlers.get("SendMessage"), times(3)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(2);
+        Map<String, Object> params = sendMessageWihParameters.get(3);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -365,10 +403,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -384,10 +418,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertNodeTriggered(pId, "Mission Aborted", "Update Incident Aborted");
         assertNodeNotTriggered(pId, "Update Incident Assigned");
 
-        verify(workItemHandlers.get("SendMessage"), times(3)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(2);
+        Map<String, Object> params = sendMessageWihParameters.get(3);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -419,10 +453,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -440,10 +470,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         assertNodeTriggered(pId, "Update Incident PickedUp");
 
-        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(3);
+        Map<String, Object> params = sendMessageWihParameters.get(4);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -477,10 +507,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -499,10 +525,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertNodeTriggered(pId, "Update Incident Assigned", "Mission Aborted", "Update Incident Aborted");
         assertNodeNotTriggered(pId, "Update Incident PickedUp");
 
-        verify(workItemHandlers.get("SendMessage"), times(4)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(3);
+        Map<String, Object> params = sendMessageWihParameters.get(4);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -536,10 +562,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -560,10 +582,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         assertNodeTriggered(pId, "Update Incident Delivered");
 
-        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(6)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(4);
+        Map<String, Object> params = sendMessageWihParameters.get(5);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -597,10 +619,6 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
         setup(true);
 
-        incidentId = UUID.randomUUID().toString();
-        responderId = "responderId";
-        responders = responders();
-        destinations = destinations();
         Incident incident = incident(incidentId);
 
         long pId = startProcess(incident, destinations, "PT60S");
@@ -623,10 +641,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         assertNodeTriggered(pId, "Update Incident PickedUp", "Mission Aborted", "Update Incident Aborted");
         assertNodeNotTriggered(pId, "Update Incident Delivered");
 
-        verify(workItemHandlers.get("SendMessage"), times(5)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+        verify(workItemHandlers.get("SendMessage"), times(6)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         // SendMessageTask
-        Map<String, Object> params = sendMessageWihParameters.get(4);
+        Map<String, Object> params = sendMessageWihParameters.get(5);
         assertThat(params, notNullValue());
         assertThat(params.get("MessageType"), equalTo("UpdateIncident"));
         assertThat(params.get("Payload"), notNullValue());
@@ -637,6 +655,12 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
     }
 
     private void setup(boolean assigned) {
+
+        incidentId = UUID.randomUUID().toString();
+        responderId = "responderId";
+        responders = responders();
+        destinations = destinations();
+        incidentPriority = incidentPriority(incidentId);
 
         if (mgr == null) {
             workItemHandlers = new HashMap<>();
@@ -679,15 +703,27 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
                 return null;
             }).when(mockSendMessageWih).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
+            WorkItemHandler mockIncidentPriorityServiceWih = mock(WorkItemHandler.class);
+            workItemHandlers.put("IncidentPriorityService", mockIncidentPriorityServiceWih);
+            doAnswer(invocation -> {
+                WorkItem workItem = (WorkItem) invocation.getArguments()[0];
+                WorkItemManager workItemManager = (WorkItemManager) invocation.getArguments()[1];
+                incidentPriorityServiceWihParameters.add(workItem.getParameters());
+                Map<String, Object> results = new HashMap<>();
+                results.put("IncidentPriority", incidentPriority);
+                workItemManager.completeWorkItem(workItem.getId(), results);
+                return null;
+            }).when(mockIncidentPriorityServiceWih).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
+
             mgr = createRuntimeManager(Strategy.PROCESS_INSTANCE, "test", workItemHandlers, "com/redhat/cajun/navy/process/incident-process.bpmn");
         }
     }
 
     private Mission businessRuleTaskResult(boolean assigned) {
         Mission mission = new Mission();
+        mission.setIncidentId(incidentId);
         if (assigned) {
             mission.setStatus(Status.ASSIGNED);
-            mission.setIncidentId(incidentId);
             mission.setResponderId(responderId);
         } else {
             mission.setStatus(Status.UNASSIGNED);
@@ -716,5 +752,11 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
 
     private Responders responders() {
         return new Responders();
+    }
+
+    private IncidentPriority incidentPriority(String incidentId) {
+        IncidentPriority ip = new IncidentPriority();
+        ip.setIncidentId(incidentId);
+        return ip;
     }
 }
