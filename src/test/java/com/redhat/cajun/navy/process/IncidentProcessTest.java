@@ -4,6 +4,7 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.notNullValue;
+import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -11,6 +12,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -249,6 +251,11 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         Mission m = (Mission) params.get("Payload");
         assertThat(m.getStatus(), equalTo(Status.UNASSIGNED));
         assertThat(m.getIncidentId(), equalTo(incidentId));
+        assertThat(m.getResponderStartLat(), nullValue());
+        assertThat(m.getResponderStartLong(), nullValue());
+        assertThat(m.getDestinationLat(), nullValue());
+        assertThat(m.getDestinationLong(), nullValue());
+        assertThat(m.getResponderId(), nullValue());
     }
 
     /**
@@ -284,6 +291,21 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         verify(workItemHandlers.get("SendMessage"), times(2)).executeWorkItem(any(WorkItem.class), any(WorkItemManager.class));
 
         assertNodeActive(pId, "timer");
+
+        // SendMessageTask
+        Map<String, Object> params = sendMessageWihParameters.get(1);
+        assertThat(params, notNullValue());
+        assertThat(params.get("MessageType"), equalTo("IncidentAssignment"));
+        assertThat(params.get("Payload"), notNullValue());
+        assertThat(params.get("Payload"), is(instanceOf(Mission.class)));
+        Mission m = (Mission) params.get("Payload");
+        assertThat(m.getStatus(), equalTo(Status.UNASSIGNED));
+        assertThat(m.getIncidentId(), equalTo(incidentId));
+        assertThat(m.getResponderStartLat(), nullValue());
+        assertThat(m.getResponderStartLong(), nullValue());
+        assertThat(m.getDestinationLat(), nullValue());
+        assertThat(m.getDestinationLong(), nullValue());
+        assertThat(m.getResponderId(), nullValue());
     }
 
     /**
@@ -725,6 +747,10 @@ public class IncidentProcessTest extends JbpmBaseTestCase {
         if (assigned) {
             mission.setStatus(Status.ASSIGNED);
             mission.setResponderId(responderId);
+            mission.setResponderStartLat(new BigDecimal("30.12345"));
+            mission.setResponderStartLong(new BigDecimal("-77.98765"));
+            mission.setDestinationLat(new BigDecimal("31.98765"));
+            mission.setDestinationLong(new BigDecimal("-78.13579"));
         } else {
             mission.setStatus(Status.UNASSIGNED);
         }
